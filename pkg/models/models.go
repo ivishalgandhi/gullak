@@ -14,3 +14,17 @@ type Item struct {
 type Transactions struct {
 	Transactions []Item `json:"transactions"`
 }
+
+type Asset struct {
+    InstitutionName string  `json:"institution_name"`
+    InstitutionType string  `json:"institution_type"`
+    AssetName       string  `json:"asset_name"`
+    CurrentValue    float64 `json:"current_value"`
+    Currency        string  `json:"currency,omitempty"`
+    Description     string  `json:"description,omitempty"`
+    Confirm         bool    `json:"confirm"`
+}
+
+type Assets struct {
+    Assets []Asset `json:"assets"`
+}

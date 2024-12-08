@@ -18,6 +18,11 @@ const router = createRouter({
           name: 'transactions',
           component: () => import('../views/Transactions.vue')
         },
+        {
+          path: '/assets',
+          name: 'assets',
+          component: () => import('../views/Assets.vue')
+        }
       ]
     }
   ]

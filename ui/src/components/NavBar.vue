@@ -18,6 +18,9 @@ import { Button } from '@/components/ui/button'
       <router-link class="text-gray-700 transition-colors hover:text-gray-900 hover:bg-gray-100 p-2 rounded"
         to="/transactions">Transactions
       </router-link>
+      <router-link class="text-gray-700 transition-colors hover:text-gray-900 hover:bg-gray-100 p-2 rounded"
+        to="/assets">Assets
+      </router-link>
     </div>
 
     <!-- Mobile Navigation Trigger -->
@@ -37,6 +40,8 @@ import { Button } from '@/components/ui/button'
             </span>
           </a>
           <router-link class="text-gray-700 transition-colors hover:text-gray-900" to="/transactions">Transactions
+          </router-link>
+          <router-link class="text-gray-700 transition-colors hover:text-gray-900" to="/assets">Assets
           </router-link>
         </nav>
       </SheetContent>

@@ -61,3 +61,73 @@ SELECT
 FROM transactions
 GROUP BY year, month, category
 ORDER BY year DESC, month DESC, total_spent DESC;
+
+-- Asset Management Queries
+
+-- name: CreateAsset :one
+-- Creates a new asset
+INSERT INTO assets (
+    created_at, institution_name, institution_type, 
+    asset_name, current_value, currency, 
+    last_updated, description, confirm
+)
+VALUES (
+    CURRENT_TIMESTAMP, ?, ?, 
+    ?, ?, ?, 
+    CURRENT_TIMESTAMP, ?, ?
+)
+RETURNING *;
+
+-- name: ListAssets :many
+-- Lists all assets
+SELECT * FROM assets 
+WHERE (:confirm IS NULL OR confirm = :confirm)
+ORDER BY created_at DESC;
+
+-- name: GetAsset :one
+-- Gets a specific asset by ID
+SELECT * FROM assets WHERE id = ?;
+
+-- name: GetAssetByInstitution :one
+-- Gets an asset by institution name, type and asset name
+SELECT * FROM assets 
+WHERE institution_name = ? 
+AND institution_type = ? 
+AND asset_name = ?;
+
+-- name: UpdateAssetValue :one
+-- Updates an asset's value
+UPDATE assets 
+SET current_value = ?, 
+    currency = ?,
+    last_updated = CURRENT_TIMESTAMP,
+    confirm = ?
+WHERE id = ? 
+RETURNING *;
+
+-- name: UpdateAssetValueAndHistory :exec
+-- Updates an asset's value and creates a history record
+UPDATE assets 
+SET current_value = ?, 
+    currency = ?,
+    last_updated = CURRENT_TIMESTAMP,
+    confirm = ?
+WHERE id = ?;
+
+-- name: CreateAssetHistory :one
+-- Creates a history record for an asset value change
+INSERT INTO asset_history (
+    asset_id, value_date, value, currency
+)
+VALUES (?, CURRENT_TIMESTAMP, ?, ?)
+RETURNING *;
+
+-- name: GetAssetHistory :many
+-- Gets the value history for an asset
+SELECT * FROM asset_history 
+WHERE asset_id = ? 
+ORDER BY value_date DESC;
+
+-- name: DeleteAsset :exec
+-- Deletes an asset
+DELETE FROM assets WHERE id = ?;

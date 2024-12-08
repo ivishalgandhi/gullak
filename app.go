@@ -62,6 +62,14 @@ func initApp(addr string, timeout time.Duration, static fs.FS, queries *db.Queri
 	e.GET("/api/reports/daily-spending", handleDailySpending)                // Retrieves spending for a specific day
 	// e.GET("/api/reports/monthly-spending-summary", handleMonthlySpendingSummary) // Retrieves spending summary by month
 
+	// Asset management routes
+	e.POST("/api/assets", handleCreateAsset)                                // Creates a new asset
+	e.GET("/api/assets", handleListAssets)                                  // Lists all assets
+	e.GET("/api/assets/:id", handleGetAsset)                               // Retrieves a specific asset
+	e.PUT("/api/assets/:id/value", handleUpdateAssetValue)                 // Updates asset value
+	e.DELETE("/api/assets/:id", handleDeleteAsset)                         // Deletes an asset
+	e.GET("/api/assets/:id/history", handleGetAssetHistory)                // Retrieves asset value history
+
 	// Middleware to serve the static files.
 	e.Use(middleware.StaticWithConfig(middleware.StaticConfig{
 		Root:       "/",

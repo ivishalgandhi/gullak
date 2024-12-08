@@ -9,7 +9,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/mr-karan/gullak/internal/db"
-	"github.com/mr-karan/gullak/internal/llm"
 	"github.com/mr-karan/gullak/pkg/models"
 )
 
@@ -40,49 +39,115 @@ func handleIndex(c echo.Context) error {
 }
 
 func handleCreateTransaction(c echo.Context) error {
-	m := c.Get("app").(*App)
+	app := c.Get("app").(*App)
+
+	// Parse input
 	var input ExpenseInput
 	if err := c.Bind(&input); err != nil {
-		m.log.Error("Error binding input", "error", err)
-		return c.JSON(http.StatusBadRequest, Resp{
-			Error: "Error saving expenses",
-		})
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid input format")
 	}
 
-	if input.Line == "" {
-		m.log.Error("Empty input", "error", errors.New("empty input"))
-		return c.JSON(http.StatusBadRequest, Resp{
-			Error: "Empty input",
-		})
-	}
-
-	transactions, err := m.llm.Parse(input.Line)
+	// Parse the input using unified Parse method
+	financialData, err := app.llm.Parse(input.Line)
 	if err != nil {
-		var noTxErr *llm.NoValidTransactionError
-		if errors.As(err, &noTxErr) {
-			m.log.Error("No valid transactions found", "error", noTxErr)
-			return c.JSON(http.StatusBadRequest, Resp{
-				Error: noTxErr.Error(),
+		return echo.NewHTTPError(http.StatusBadRequest, "Could not parse input as transaction or asset")
+	}
+
+	// Handle assets if present
+	if len(financialData.Assets) > 0 {
+		for _, asset := range financialData.Assets {
+			// Check if asset already exists
+			existingAsset, err := app.queries.GetAssetByInstitution(c.Request().Context(), db.GetAssetByInstitutionParams{
+				InstitutionName: asset.InstitutionName,
+				InstitutionType: asset.InstitutionType,
+				AssetName:      asset.AssetName,
 			})
+			
+			if err == nil {
+				// Asset exists, update its value and create history
+				err = app.queries.UpdateAssetValueAndHistory(c.Request().Context(), db.UpdateAssetValueAndHistoryParams{
+					CurrentValue: asset.CurrentValue,
+					Currency:    asset.Currency,
+					Confirm:     asset.Confirm,
+					ID:          existingAsset.ID,
+				})
+				if err != nil {
+					return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update asset")
+				}
+
+				// Create history record
+				_, err = app.queries.CreateAssetHistory(c.Request().Context(), db.CreateAssetHistoryParams{
+					AssetID:  existingAsset.ID,
+					Value:    asset.CurrentValue,
+					Currency: asset.Currency,
+				})
+				if err != nil {
+					return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create asset history")
+				}
+
+				// Return the updated asset
+				updatedAsset, err := app.queries.GetAsset(c.Request().Context(), existingAsset.ID)
+				if err != nil {
+					return echo.NewHTTPError(http.StatusInternalServerError, "Failed to fetch updated asset")
+				}
+				return c.JSON(http.StatusOK, updatedAsset)
+			}
+
+			// Asset doesn't exist, create new one
+			result, err := app.queries.CreateAsset(c.Request().Context(), db.CreateAssetParams{
+				InstitutionName: asset.InstitutionName,
+				InstitutionType: asset.InstitutionType,
+				AssetName:       asset.AssetName,
+				CurrentValue:    asset.CurrentValue,
+				Currency:        asset.Currency,
+				Description:     asset.Description,
+				Confirm:        asset.Confirm,
+			})
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create asset")
+			}
+
+			// Create initial history record for new asset
+			_, err = app.queries.CreateAssetHistory(c.Request().Context(), db.CreateAssetHistoryParams{
+				AssetID:  result.ID,
+				Value:    asset.CurrentValue,
+				Currency: asset.Currency,
+			})
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create asset history")
+			}
+
+			return c.JSON(http.StatusCreated, result)
 		}
-		m.log.Error("Error parsing expenses", "error", err)
-		return c.JSON(http.StatusBadRequest, Resp{
-			Error: "Error parsing expenses",
-		})
 	}
 
-	savedTransactions, err := m.Save(transactions)
-	if err != nil {
-		m.log.Error("Error saving transactions", "error", err)
-		return c.JSON(http.StatusInternalServerError, Resp{
-			Error: "Error saving transactions",
-		})
+	// Handle transactions if present
+	if len(financialData.Transactions) > 0 {
+		var createdTransactions []interface{}
+		for _, t := range financialData.Transactions {
+			// Parse the transaction date string into time.Time
+			transactionDate, err := time.Parse("2006-01-02", t.TransactionDate)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusBadRequest, "Invalid transaction date format. Expected YYYY-MM-DD")
+			}
+
+			result, err := app.queries.CreateTransaction(c.Request().Context(), db.CreateTransactionParams{
+				TransactionDate: transactionDate,
+				Amount:         t.Amount,
+				Currency:       t.Currency,
+				Category:       t.Category,
+				Description:    t.Description,
+				Confirm:        t.Confirm,
+			})
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create transaction")
+			}
+			createdTransactions = append(createdTransactions, result)
+		}
+		return c.JSON(http.StatusCreated, createdTransactions)
 	}
 
-	return c.JSON(http.StatusOK, Resp{
-		Message: "Expenses saved",
-		Data:    savedTransactions,
-	})
+	return echo.NewHTTPError(http.StatusBadRequest, "No valid financial data found in input")
 }
 
 func handleListTransactions(c echo.Context) error {
@@ -380,6 +445,122 @@ func handleDailySpending(c echo.Context) error {
 		Data:    spendingSummaries,
 		Message: "Daily spending totals retrieved successfully",
 	})
+}
+
+// Asset Management Handlers
+
+func handleCreateAsset(c echo.Context) error {
+	app := c.Get("app").(*App)
+	var asset models.Asset
+	if err := c.Bind(&asset); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid request body")
+	}
+
+	// Create asset in database
+	result, err := app.queries.CreateAsset(c.Request().Context(), db.CreateAssetParams{
+		InstitutionName: asset.InstitutionName,
+		InstitutionType: asset.InstitutionType,
+		AssetName:       asset.AssetName,
+		CurrentValue:    asset.CurrentValue,
+		Currency:        asset.Currency,
+		Description:     asset.Description,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create asset")
+	}
+
+	return c.JSON(http.StatusCreated, result)
+}
+
+func handleListAssets(c echo.Context) error {
+	app := c.Get("app").(*App)
+	assets, err := app.queries.ListAssets(c.Request().Context(), nil) // Pass nil to get all assets regardless of confirmation status
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to fetch assets")
+	}
+	return c.JSON(http.StatusOK, assets)
+}
+
+func handleGetAsset(c echo.Context) error {
+	app := c.Get("app").(*App)
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid asset ID")
+	}
+	
+	asset, err := app.queries.GetAsset(c.Request().Context(), id)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Asset not found")
+	}
+	return c.JSON(http.StatusOK, asset)
+}
+
+func handleUpdateAssetValue(c echo.Context) error {
+	app := c.Get("app").(*App)
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid asset ID")
+	}
+
+	var update struct {
+		CurrentValue float64 `json:"current_value"`
+		Currency    string  `json:"currency"`
+		Confirm     bool    `json:"confirm"`
+	}
+	if err := c.Bind(&update); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid request body")
+	}
+
+	// Update asset value
+	result, err := app.queries.UpdateAssetValue(c.Request().Context(), db.UpdateAssetValueParams{
+		ID:           id,
+		CurrentValue: update.CurrentValue,
+		Currency:     update.Currency,
+		Confirm:      update.Confirm,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update asset value")
+	}
+
+	// Create history entry
+	_, err = app.queries.CreateAssetHistory(c.Request().Context(), db.CreateAssetHistoryParams{
+		AssetID:  id,
+		Value:    update.CurrentValue,
+		Currency: update.Currency,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create asset history")
+	}
+
+	return c.JSON(http.StatusOK, result)
+}
+
+func handleDeleteAsset(c echo.Context) error {
+	app := c.Get("app").(*App)
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid asset ID")
+	}
+
+	err = app.queries.DeleteAsset(c.Request().Context(), id)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to delete asset")
+	}
+	return c.NoContent(http.StatusOK)
+}
+
+func handleGetAssetHistory(c echo.Context) error {
+	app := c.Get("app").(*App)
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid asset ID")
+	}
+
+	history, err := app.queries.GetAssetHistory(c.Request().Context(), id)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to fetch asset history")
+	}
+	return c.JSON(http.StatusOK, history)
 }
 
 // validateDateRange ensures that the start date is before or the same as the end date.
